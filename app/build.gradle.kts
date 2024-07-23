@@ -66,4 +66,14 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // Navigation
+    val nav_version = "2.7.7"
+    implementation("androidx.navigation:navigation-compose:$nav_version")
+
+    // Retrofit2 (For API Get Calls)
+    val retrofit2_version = "2.11.0"
+    implementation("com.squareup.retrofit2:retrofit:$retrofit2_version")
+    // GSON
+    implementation("com.squareup.retrofit2:converter-gson:$retrofit2_version")
 }
