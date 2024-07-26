@@ -1,5 +1,8 @@
 package com.example.moziwaregpt
 
+import android.content.Context
+import android.os.Build
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -59,33 +63,64 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.example.moziwaregpt.ui.theme.Grey
 import kotlinx.coroutines.launch
-import retrofit2.Call
-import retrofit2.Callback
-import retrofit2.Response
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.RandomAccessFile
+import java.util.Base64
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(navController: NavHostController) {
-    var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
+    val viewModel: ChatViewModel = viewModel()
+    val messages = viewModel.messages
+    val isLoading by viewModel.isLoading.collectAsState()
     var inputText by remember { mutableStateOf("") }
     var isVoiceActive by remember { mutableStateOf(false) }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
+    val context = LocalContext.current
+
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior(rememberTopAppBarState())
 
-    ModalNavigationDrawer(modifier = Modifier.imePadding(), // Keyboard Padding ,
+    ModalNavigationDrawer(
+        modifier = Modifier.imePadding(), // Keyboard Padding ,
         drawerState = drawerState, drawerContent = {
             ModalDrawerSheet {
-                Column (modifier = Modifier
-                    .fillMaxHeight()
-                    .padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(16.dp), verticalArrangement = Arrangement.SpaceBetween
+                ) {
                     Button(onClick = {
                         navController.navigate(Screens.LOGIN.name)
                     }) {
@@ -152,7 +187,7 @@ fun HomeScreen(navController: NavHostController) {
                             // TODO: SAVE THE CURRENT CHAT
 
                             // Clears the current chat
-                            messages = emptyList()
+                            viewModel.clearMessages()
                             inputText = ""
                         }) {
                             Icon(
@@ -187,23 +222,60 @@ fun HomeScreen(navController: NavHostController) {
                         messages = messages,
                         inputText = inputText,
                         onInputChange = { inputText = it },
-                        onSendMessage = {
+                        onSendMessage = { question ->
                             if (inputText.isNotBlank()) {
-                                messages = messages + ChatMessage(inputText, true)
-                                // TODO: Send message to backend here
+                                viewModel.addMessage(ChatMessage(question, true))
                                 inputText = ""
-                                // TODO: ADD AI RESPONSE HERE
-                                messages = messages + ChatMessage("DUMMY AI TEXT", false)
+                                viewModel.setLoading(true)
+
+                                scope.launch {
+
+                                    try {
+                                        // CHECKS IF CONNECTED TO NETWORK
+                                        if (!isNetworkAvailable(context)) {
+                                            throw NoConnectivityException()
+                                        }
+
+                                        val response = withContext(Dispatchers.IO) {
+                                            RetrofitClient.apiInterface.getAnswer(question)
+                                        }
+
+                                        val advice = response.data.advice
+                                        viewModel.addMessage(
+                                            ChatMessage(
+                                                advice.content,
+                                                false,
+                                                advice
+                                            )
+                                        )
+
+                                    } catch (e: Exception) {
+                                        val errorMessage = when (e) {
+                                            is NoConnectivityException -> "No Internet Connection. Please check your network settings and try again"
+                                            is UnknownHostException -> "Unable to reach the server. Please check your internet connection or try again later."
+                                            is ConnectException -> "Failed to connect to the server. Please try again later."
+                                            is SocketTimeoutException -> "The connection to the server timed out. Please try again."
+                                            else -> "An unexpected error occurred: ${e.message}"
+                                        }
+                                        Log.e("Chat", "Error in API call", e)
+                                        viewModel.addMessage(ChatMessage(errorMessage, false))
+                                    } finally {
+                                        viewModel.setLoading(false)
+                                    }
+
+                                    viewModel.setLoading(false)
+                                }
                             }
-                        }
+                        },
+                        isLoading = isLoading,
+                        context = context
                     )
                 }
 
             }
-            }
         }
     }
-
+}
 
 
 @Composable
@@ -211,7 +283,9 @@ fun ChatInterface(
     messages: List<ChatMessage>,
     inputText: String,
     onInputChange: (String) -> Unit,
-    onSendMessage: () -> Unit
+    onSendMessage: (String) -> Unit,
+    isLoading: Boolean,
+    context: Context
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -225,7 +299,7 @@ fun ChatInterface(
                     if (message.isUser) {
                         UserMessage(text = message.content)
                     } else {
-                        AssistantMessage(text = message.content)
+                        AssistantMessage(message = message, context = context)
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
@@ -234,17 +308,20 @@ fun ChatInterface(
             ChatInputField(
                 inputText = inputText,
                 onInputChange = onInputChange,
-                onSendMessage = onSendMessage
+                onSendMessage = { onSendMessage(inputText) },
+                isLoading = isLoading
             )
         }
     }
+    GlobalFunUtils.LoadingDialog()
 }
 
 @Composable
 fun ChatInputField(
     inputText: String,
     onInputChange: (String) -> Unit,
-    onSendMessage: () -> Unit
+    onSendMessage: () -> Unit,
+    isLoading: Boolean
 ) {
     Box(
         modifier = Modifier
@@ -279,12 +356,16 @@ fun ChatInputField(
                     Text(text = "有问题尽管问我～", color = Color(0xff2d354b))
                 },
                 trailingIcon = {
-                    IconButton(onClick = onSendMessage) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_talk_send),
-                            contentDescription = "Send Button",
-                            tint = if(inputText.isNotBlank()) Color(0xff004098) else Color.Gray
-                        )
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    } else {
+                        IconButton(onClick = onSendMessage) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_talk_send),
+                                contentDescription = "Send Button",
+                                tint = if (inputText.isNotBlank()) Color(0xff004098) else Color.Gray
+                            )
+                        }
                     }
                 },
                 colors = TextFieldDefaults.colors(
@@ -300,7 +381,8 @@ fun ChatInputField(
 }
 
 @Composable
-fun AssistantMessage(text: String) {
+fun AssistantMessage(message: ChatMessage, context: Context) {
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -308,13 +390,68 @@ fun AssistantMessage(text: String) {
     ) {
         Surface(
             shape = RoundedCornerShape(
-                topStart = 8.dp,
+                topStart = 1.dp,
                 topEnd = 8.dp,
                 bottomEnd = 8.dp,
-                bottomStart = 1.dp
+                bottomStart = 8.dp
             ), color = Color.White
         ) {
-            Text(text = text, modifier = Modifier.padding(6.dp), color = Color.Black)
+            Column(modifier = Modifier.padding(8.dp)) {
+                Text(text = message.content, color = Color.Black)
+                if (message.advice != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(
+                        modifier = Modifier.fillMaxWidth(),
+                        thickness = 1.dp,
+                        color = Color(0xffeef0f6)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                // DOWNLOAD PDF
+                                val downloader = AndroidDownloader(context)
+                                message.advice?.pdf.let { pdfUrl ->
+                                    if (pdfUrl != null) {
+                                        downloader.downloadFile(pdfUrl)
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(3.dp),
+                            contentPadding = PaddingValues(2.dp),
+                            border = BorderStroke(1.dp, Color(0xff004098)),
+                            modifier = Modifier.height(24.dp)
+                        ) {
+                            Text(text = "文档来源1", color = Color(0xff004098), fontSize = 13.sp)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                // DECODES PDF AND DISPLAYS IT
+                                message.advice?.let {
+                                    PdfUtils.decodeBase64(
+                                        context,
+                                        it.pdf_file_content,
+                                        "CURRENT QUESTION"
+                                    )
+                                }
+                            },
+                            shape = RoundedCornerShape(3.dp),
+                            contentPadding = PaddingValues(2.dp),
+                            border = BorderStroke(1.dp, Color(0xff004098)),
+                            modifier = Modifier.height(24.dp)
+                        ) {
+                            Text(
+                                text = "点击可查看文档",
+                                color = Color(0xff004098),
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+
+            }
+
         }
     }
 }
@@ -330,9 +467,9 @@ fun UserMessage(text: String) {
         Surface(
             shape = RoundedCornerShape(
                 topStart = 8.dp,
-                topEnd = 8.dp,
+                topEnd = 1.dp,
                 bottomStart = 8.dp,
-                bottomEnd = 1.dp
+                bottomEnd = 8.dp
             ), color = Color(0xff004098)
         ) {
             Text(text = text, modifier = Modifier.padding(6.dp), color = Color.White)
@@ -340,11 +477,26 @@ fun UserMessage(text: String) {
     }
 }
 
-@Composable
-fun QuestionScreen(viewModel: QuestionViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
-    val apiResponse by viewModel.apiResponse.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val question by remember {
-        mutableStateOf("")
+class NoConnectivityException : IOException("No network available")
+
+fun isNetworkAvailable(context: Context): Boolean {
+    val connectivityManager =
+        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        val network = connectivityManager.activeNetwork ?: return false
+        val activeNetwork = connectivityManager.getNetworkCapabilities(network) ?: return false
+
+        return when {
+            activeNetwork.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> true
+            activeNetwork.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> true
+            activeNetwork.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> true
+            else -> false
+        }
+    } else {
+        @Suppress("DEPRECATION") val networkInfo =
+            connectivityManager.activeNetworkInfo ?: return false
+        @Suppress("DEPRECATION")
+        return networkInfo.isConnected
     }
 }

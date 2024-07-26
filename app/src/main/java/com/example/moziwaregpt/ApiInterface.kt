@@ -8,5 +8,5 @@ import retrofit2.http.Path
 interface ApiInterface {
 
     @GET("{question}")
-    suspend fun getAnswer(@Path("question") question: String): Response<APIResponse>
+    suspend fun getAnswer(@Path("question") question: String): APIResponse
 }
